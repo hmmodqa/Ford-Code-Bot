@@ -1,0 +1,32 @@
+import os, asyncio, logging, httpx from aiogram import Bot, Dispatcher, types, F from aiogram.filters import CommandStart from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo from aiogram.client.default import DefaultBotProperties from fastapi import FastAPI from fastapi.responses import HTMLResponse import uvicorn import google.generativeai as genai  logging.basicConfig(level=logging.INFO) TOKEN = os.environ["BOT_TOKEN"] GEMINI_KEY = os.environ["GEMINI_API_KEY"] YOUTUBE_KEY = os.environ["YOUTUBE_API_KEY"] WEBAPP_URL = os.environ.get("WEBAPP_URL", "http://localhost:8000")  genai.configure(api_key=GEMINI_KEY) model = genai.GenerativeModel('gemini-1.5-flash')  LOCAL_CODES = {     "P0300": "إشعال متعدد الأعطال. افحص البواجات والكويلات أولاً.",     "P0152": "جهد حساس الأكسجين عالي. غالباً تسريب عادم أو خلط وقود.",     "P0740": "انزلاق محول العزم. افحص زيت الجير MERCON V والفلتر.", }  async def get_ai_response(code, question=None):     p = f"أنت خبير فورد بانثر. اشرح بالعربي المختصر للكود {code}."     if question:         p += f"\nالسؤال: {question}"     p += "\nأعطني: المعنى، الأسباب، خطوات التشخيص، قطعة الغيار، نصيحة."     try:         r = await asyncio.to_thread(model.generate_content, p)         return r.text     except Exception as e:         return f"تعذر الاتصال بالذكاء الاصطناعي: {e}"  async def search_youtube(code):     url = "https://www.googleapis.com/youtube/v3/search"     params = {"part": "snippet", "q": f"Ford Panther {code} repair",               "key": YOUTUBE_KEY, "type": "video", "maxResults": 1}     async with httpx.AsyncClient(timeout=20) as c:         r = await c.get(url, params=params)         if r.status_code == 200:             items = r.json().get("items", [])             if items:                 return f"https://www.youtube.com/watch?v={items[0]['id']['videoId']}"     return None
+    HTML = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"> <meta name="viewport" content="width=device-width,initial-scale=1"> <title>فاحص بانثر الذكي</title> <script src="https://telegram.org/js/telegram-web-app.js"></script> <style>body{margin:0;background:#0f1216;color:#e8edf3;font-family:system-ui;padding:14px} input,button{width:100%;padding:13px;border-radius:12px;margin-bottom:9px;font-size:16px} input{background:#12161c;color:#fff;border:1px solid #2a323d;text-align:center} button{background:#3b82f6;color:#fff;border:0} .q{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0} .q button{width:auto;padding:8px 10px;font-size:13px;background:#222a34} #out{background:#181d24;padding:14px;border-radius:14px;display:none;white-space:pre-wrap;line-height:1.8} .t{display:inline-block;background:#12304d;color:#7dd3fc;border-radius:20px;padding:2px 10px;font-size:12px} a{color:#7dd3fc}</style></head><body> <h1>فاحص بانثر الذكي</h1> <input id="c" placeholder="P0300"><button onclick="go()">اشرح الكود</button> <div class="q"><button onclick="q('P0300')">P0300</button><button onclick="q('P0152')">P0152</button><button onclick="q('P0740')">P0740</button><button onclick="q('P2107')">P2107</button></div> <div class="q"><button onclick="ask()">اسأل الخبير</button></div> <div id="out"></div><script> var o=document.getElementById('out'); function q(c){document.getElementById('c').value=c;go();} function ask(){document.getElementById('c').value='سؤال: ';go();} async function go(){ var c=document.getElementById('c').value.trim(); if(!c){o.style.display='block';o.innerHTML='اكتب كوداً أو سؤالاً';return;} o.style.display='block';o.innerHTML='جاري البحث...'; try{ var isCode=/^[PBUC][0-9]{4}$/i.test(c); var r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:c,isCode:isCode})}); var j=await r.json(); var v='<span class="t">'+j.source+'</span>\\n'+j.text; if(j.video){v+='\\n\\nفيديو: '+j.video;} o.innerHTML=v; }catch(e){o.innerHTML='تعذر الاتصال، حاول مرة ثانية.';}} </script></body></html>"""  bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML")) dp = Dispatcher() app = FastAPI()  @app.get("/", response_class=HTMLResponse) async def root():     return HTML  @app.post("/api/ask") async def api(payload: dict):     text = str(payload.get("text", "")).strip()     is_code = bool(payload.get("isCode"))     local = LOCAL_CODES.get(text.upper())     if is_code and local:         return {"source": "قاعدة بانثر", "text": local, "video": await search_youtube(text.upper())}     ai = await get_ai_response(text.upper() if is_code else "", text)     vid = await search_youtube(text.upper()) if is_code else None     return {"source": "ذكاء صناعي", "text": ai, "video": vid}
+    ```python
+`@dp``.``message``(``CommandStart``())``
+``async`` ``def`` start``(``m``:`` types``.``Message``):``
+    kb ``=`` InlineKeyboardMarkup``(``inline_keyboard``=``[[``InlineKeyboardButton``(``
+        text``=``"فاحص الأكواد"``,`` web_app``=``WebAppInfo``(``url``=``f"``{``WEBAPP_URL``}``/"``))]])``
+    ``await`` m``.``answer``(``"أهلاً بيك\n\nأرسل لي كود العطل مثل P0300 وسأشرحه بالعربي مع فيديو شرح."``,``
+                   reply_markup``=``kb``)``
+
+@dp``.``message``(``F``.``text``.``regexp``(``r"\b[PBUC][0-9]{4}\b"``))``
+``async`` ``def`` code_msg``(``m``:`` types``.``Message``):``
+    code ``=`` m``.``text``.``strip``().``split``()[``0``].``upper``()``
+    local ``=`` LOCAL_CODES``.``get``(``code``)``
+    txt ``=`` local ``if`` local ``else`` ``await`` get_ai_response``(``code``)``
+    vid ``=`` ``await`` search_youtube``(``code``)``
+    out ``=`` ``f"🔧 ``{``txt``}``"``
+    ``if`` vid``:``
+        out ``+=`` ``f"\n\n🎬 فيديو: ``{``vid``}``"``
+    ``await`` m``.``answer``(``out``)``
+
+@dp``.``message``(``F``.``text``)``
+``async`` ``def`` any_msg``(``m``:`` types``.``Message``):``
+    q ``=`` m``.``text``.``strip``()``
+    ai ``=`` ``await`` get_ai_response``(``""``,`` q``)``
+    ``await`` m``.``answer``(``f"💡 ``{``ai``}``"``)``
+
+``if`` __name__ ``==`` ``"__main__"``:``
+    ``async`` ``def`` main``():``
+        cfg ``=`` uvicorn``.``Config``(``app``,`` host``=``"0.0.0.0"``,`` port``=``int``(``os``.``environ``.``get``(``"PORT"``,`` ``8000``)),`` log_level``=``"info"``)``
+        ``await`` asyncio``.``gather``(``dp``.``start_polling``(``bot``),`` uvicorn``.``Server``(``cfg``).``serve``())``
+    asyncio``.``run``(``main``())
